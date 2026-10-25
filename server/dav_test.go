@@ -292,3 +292,81 @@ func davResponseBlock(t *testing.T, multistatus, href string) string {
 	end := strings.Index(multistatus[start:], "</response>")
 	return multistatus[start : start+end]
 }
+
+// TestDAVQueryTodoTimeRange: go-webdav alone rejects every VTODO under a
+// time-range filter, which emptied BusyCal's task lists.
+func TestDAVQueryTodoTimeRange(t *testing.T) {
+	srv := stubDAV(t)
+	c := davClient(t, srv, "mac", testDAVPassword)
+	ctx := context.Background()
+
+	query := func(cal string, start, end time.Time) []string {
+		t.Helper()
+		objs, err := c.QueryCalendar(ctx, davCalendarPath(cal), &caldav.CalendarQuery{
+			CompRequest: caldav.CalendarCompRequest{Name: ical.CompCalendar, AllProps: true, AllComps: true},
+			CompFilter: caldav.CompFilter{Name: ical.CompCalendar, Comps: []caldav.CompFilter{
+				{Name: ical.CompToDo, Start: start, End: end},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("query %s: %v", cal, err)
+		}
+		var names []string
+		for _, o := range objs {
+			names = append(names, o.Path[strings.LastIndex(o.Path, "/")+1:])
+		}
+		return names
+	}
+
+	oct := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if got := query("project-Proj1", oct, oct.AddDate(0, 0, 7)); len(got) != 1 || got[0] != "Task1.ics" {
+		t.Errorf("dated task in range: got %v, want [Task1.ics]", got)
+	}
+	if got := query("project-Proj1", oct.AddDate(-1, 0, 0), oct.AddDate(0, -6, 0)); len(got) != 0 {
+		t.Errorf("dated task out of range: got %v, want none", got)
+	}
+	if got := query("project-Proj1", oct, time.Time{}); len(got) != 1 {
+		t.Errorf("open-ended range: got %v, want [Task1.ics]", got)
+	}
+	// No DTSTART, DUE, COMPLETED or CREATED: matches any range (§9.9).
+	if got := query(thingsdav.InboxID, oct.AddDate(-1, 0, 0), oct.AddDate(0, -6, 0)); len(got) != 1 {
+		t.Errorf("undated inbox task: got %v, want [Task2.ics]", got)
+	}
+}
+
+func TestTodoInRange(t *testing.T) {
+	day := func(d int) time.Time { return time.Date(2026, 10, d, 0, 0, 0, 0, time.UTC) }
+	todo := func(props map[string]time.Time, dur time.Duration) *ical.Component {
+		c := ical.NewComponent(ical.CompToDo)
+		for k, v := range props {
+			c.Props.SetDateTime(k, v)
+		}
+		if dur > 0 {
+			p := ical.NewProp(ical.PropDuration)
+			p.SetDuration(dur)
+			c.Props.Set(p)
+		}
+		return c
+	}
+	cases := []struct {
+		name  string
+		todo  *ical.Component
+		r     davTimeRange
+		match bool
+	}{
+		{"due inside", todo(map[string]time.Time{ical.PropDue: day(5)}, 0), davTimeRange{day(1), day(10)}, true},
+		{"due before", todo(map[string]time.Time{ical.PropDue: day(5)}, 0), davTimeRange{day(6), day(10)}, false},
+		{"start only after", todo(map[string]time.Time{ical.PropDateTimeStart: day(12)}, 0), davTimeRange{day(1), day(10)}, false},
+		{"start+due spanning", todo(map[string]time.Time{ical.PropDateTimeStart: day(1), ical.PropDue: day(20)}, 0), davTimeRange{day(5), day(10)}, true},
+		{"start+duration", todo(map[string]time.Time{ical.PropDateTimeStart: day(9)}, 48*time.Hour), davTimeRange{day(10), day(12)}, true},
+		{"completed inside", todo(map[string]time.Time{ical.PropCompleted: day(3)}, 0), davTimeRange{day(1), day(10)}, true},
+		{"created after end", todo(map[string]time.Time{ical.PropCreated: day(15)}, 0), davTimeRange{day(1), day(10)}, false},
+		{"no dates", todo(nil, 0), davTimeRange{day(1), day(10)}, true},
+		{"unbounded end", todo(map[string]time.Time{ical.PropDue: day(25)}, 0), davTimeRange{day(1), time.Time{}}, true},
+	}
+	for _, tc := range cases {
+		if got := todoInRange(tc.todo, tc.r, time.UTC); got != tc.match {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.match)
+		}
+	}
+}

@@ -362,7 +362,7 @@ func (davBackend) QueryCalendarObjects(ctx context.Context, p string, query *cal
 		all = append(all, co)
 		byPath[co.Path] = o
 	}
-	matched, err := caldav.Filter(query, all)
+	matched, err := davFilter(query, all)
 	if err != nil {
 		return nil, err
 	}

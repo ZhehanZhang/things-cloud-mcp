@@ -83,6 +83,7 @@ type davViewKey struct {
 	serverIndex   int
 	generation    int64
 	utcDay        string
+	localDay      string // rollover moves overdue tasks to this day
 	completedDays int
 }
 
@@ -103,6 +104,7 @@ var loadDAVView = func() (*thingsdav.View, error) {
 		serverIndex:   syncer.LastSyncedIndex(),
 		generation:    davGeneration.Load(),
 		utcDay:        now.UTC().Format("2006-01-02"),
+		localDay:      thingsdav.LocalDay(now, thingsLocation()),
 		completedDays: davCompletedDays(),
 	}
 	davCache.mu.Lock()

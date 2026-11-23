@@ -113,6 +113,30 @@ tasks:
 | Trash | not listed | |
 | Completed | listed if completed within the last `CALDAV_COMPLETED_DAYS` (default 30; `0` = all) | See "Completed history" below |
 
+### Overdue tasks roll over to today
+
+Things never rewrites the When date of an unfinished task. A task scheduled
+for Monday and not done stays `sr = Monday` and simply keeps showing in
+Today. BusyCal would show it as overdue on Monday instead. So the server
+renders it the way Things shows it:
+
+- **Open, untimed, When date before today** (in `THINGS_TIMEZONE`): `DUE`
+  and `DTSTART` are today. Its Things reminder is left out of the render,
+  because it already fired on the original day. Nothing is written to Things.
+- **Time-blocked** (a BusyCal time of day in the sidecar): stays on the day
+  and time it was blocked. A time block is a single property of the VTODO
+  (`DUE` date-time plus `X-BUSYMAC-TASK-DURATION`), not a separate event, so
+  moving the to-do would erase the block from that day.
+- **Completed or canceled**: never moves.
+
+Edits to a rolled task, against the rolled render:
+
+- Rename, notes, tags, complete: written as usual. The date and the hidden
+  reminder are left alone in Things.
+- Drag to another day: that day is written, the reminder is kept.
+- Time-block it on today, or give it a reminder there: Things gets
+  `When = today`, so the block or alarm lands on today from then on.
+
 ### Someday rules (carried over)
 
 - Someday = `CATEGORIES` includes `Someday` and there is no date. The

@@ -4,7 +4,8 @@
 // a View per Things sync index and tests can drive it with plain structs.
 //
 // Mapping (see docs/plans/2026-10-01-caldav-server-design.md):
-//   - When date            → DUE and DTSTART, both VALUE=DATE (BusyCal's single date)
+//   - When date            → DUE and DTSTART, both VALUE=DATE (BusyCal's single date);
+//     an overdue open task shows on today unless it is time-blocked (Rollover)
 //   - Reminder             → VALARM, TRIGGER relative to the date (PT9H30M)
 //   - Tags                 → CATEGORIES, plus the Someday category for undated Someday tasks
 //   - Completed / Canceled → STATUS:COMPLETED (+COMPLETED) / STATUS:CANCELLED
@@ -154,6 +155,7 @@ func Build(in Input) (*View, error) {
 		in.Alias = func(string) (string, string, bool) { return "", "", false }
 	}
 	b := &builder{in: in, view: &View{byID: map[string]*Calendar{}}}
+	today := LocalDay(in.Now, in.Location)
 
 	// Calendar order: Inbox, loose tasks, each area followed by its
 	// projects, area-less projects, Deadlines.
@@ -196,14 +198,15 @@ func Build(in Input) (*View, error) {
 		if cal == nil {
 			continue // parent project hidden (trashed or completed long ago)
 		}
-		f := FieldsFromTask(t, in.Tags, in.SomedayCategory, in.Now)
+		extras := in.Extras(t.UUID)
+		f, _ := Rollover(FieldsFromTask(t, in.Tags, in.SomedayCategory, in.Now), HasTime(extras), today)
 		uid, name := t.UUID, t.UUID+".ics"
 		if u, n, ok := in.Alias(t.UUID); ok {
 			uid, name = u, n
 		}
 		o := &Object{Name: name, UID: uid, Key: TaskKey(t.UUID), TaskUUID: t.UUID, Title: t.Title,
 			Created: t.CreationDate.UTC().Truncate(time.Second), ModTime: modTime(t)}
-		if err := b.addObject(cal, o, b.renderTodo(t, f, uid), f); err != nil {
+		if err := b.addObject(cal, o, b.renderTodo(t, f, uid, extras), f); err != nil {
 			return nil, err
 		}
 		if t.Status == things.TaskStatusPending && t.DeadlineDate != nil {
@@ -320,7 +323,7 @@ func (b *builder) containerID(t *things.Task) string {
 	return NoProjectID
 }
 
-func (b *builder) renderTodo(t *things.Task, f TaskFields, uid string) *ical.Calendar {
+func (b *builder) renderTodo(t *things.Task, f TaskFields, uid string, extras *ical.Calendar) *ical.Calendar {
 	c := ical.NewComponent(ical.CompToDo)
 	c.Props.SetText(ical.PropUID, uid)
 	c.Props.SetText(ical.PropSummary, f.Title)
@@ -331,7 +334,7 @@ func (b *builder) renderTodo(t *things.Task, f TaskFields, uid string) *ical.Cal
 
 	var xtodo *ical.Component
 	var timezones []*ical.Component
-	if extras := b.in.Extras(t.UUID); extras != nil {
+	if extras != nil {
 		xtodo = firstChild(extras.Component, ical.CompToDo)
 		for _, child := range extras.Children {
 			if child.Name == ical.CompTimezone {

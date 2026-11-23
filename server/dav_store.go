@@ -180,6 +180,16 @@ func (s *davStore) sidecars() (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// sidecar returns one task's stored sidecar, or "".
+func (s *davStore) sidecar(taskUUID string) (string, error) {
+	var ics string
+	err := s.db.QueryRow(`SELECT ics FROM sidecars WHERE task_uuid = ?`, taskUUID).Scan(&ics)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return ics, err
+}
+
 // setSidecar replaces a task's sidecar; an empty ics removes it.
 func (s *davStore) setSidecar(taskUUID, ics string) error {
 	if ics == "" {

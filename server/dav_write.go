@@ -312,15 +312,19 @@ func davUpdateTask(device string, o *thingsdav.Object, parsed *thingsdav.ParsedT
 	if err != nil {
 		return err
 	}
-	current := thingsdav.FieldsFromTask(task, tags, davSomedayCategory(), time.Now())
+	current, raw, rolled := davCurrentFields(task, tags)
 	var base thingsdav.TaskFields
 	if err := davBase(device, o, opts, current, &base); err != nil {
 		return err
 	}
 	merged, conflicts := thingsdav.MergeFields(base, parsed.Fields, current)
+	cur := current
+	if rolled {
+		merged, cur = davSettleRollover(raw, current, base, parsed, merged)
+	}
 
 	u := newTaskUpdate()
-	if err := davApplyFields(u, task, current, merged, parsed.CompletedAt); err != nil {
+	if err := davApplyFields(u, task, cur, merged, parsed.CompletedAt); err != nil {
 		return err
 	}
 	if len(u.fields) > 1 { // more than md
@@ -334,6 +338,48 @@ func davUpdateTask(device string, o *thingsdav.Object, parsed *thingsdav.ParsedT
 		logDAV("conflict on %s.%s: client %q, Things %q — Things wins", task.UUID, c.Field, c.Client, c.Things)
 	}
 	return nil
+}
+
+// davCurrentFields is a task as clients currently see it (current, with an
+// overdue date rolled over to today) and as Things stores it (raw).
+func davCurrentFields(task *things.Task, tags map[string]string) (current, raw thingsdav.TaskFields, rolled bool) {
+	now := timeNow()
+	raw = thingsdav.FieldsFromTask(task, tags, davSomedayCategory(), now)
+	current, rolled = thingsdav.Rollover(raw, davTimed(task.UUID), thingsdav.LocalDay(now, thingsLocation()))
+	return current, raw, rolled
+}
+
+// davTimed reports whether the task's sidecar holds a BusyCal time block.
+func davTimed(taskUUID string) bool {
+	if davDB == nil {
+		return false
+	}
+	ics, err := davDB.sidecar(taskUUID)
+	if err != nil || ics == "" {
+		return false
+	}
+	cal, err := thingsdav.DecodeExtras(ics)
+	return err == nil && thingsdav.HasTime(cal)
+}
+
+// davSettleRollover turns a merge made against a rolled-over task (shown on
+// today with its reminder hidden) back into a change against Things.
+//
+// The hidden reminder survives unless the client set one of its own. The
+// roll is written to Things (When = today) only when the client pinned the
+// task to today: it time-blocked it, or gave it a reminder there. Otherwise
+// Things keeps its original date and nothing about the schedule is written.
+func davSettleRollover(raw, current, base thingsdav.TaskFields, parsed *thingsdav.ParsedTodo, merged thingsdav.TaskFields) (want, cur thingsdav.TaskFields) {
+	want, cur = merged, current
+	cur.Reminder = raw.Reminder
+	reminderSet := parsed.Fields.Reminder != base.Reminder && parsed.Fields.Reminder != thingsdav.NoReminder
+	if want.When != "" && want.Reminder == thingsdav.NoReminder && !reminderSet {
+		want.Reminder = raw.Reminder
+	}
+	if want.When == current.When && (parsed.Timed() || reminderSet) {
+		cur.When = raw.When // commit the roll so the block or alarm lands on today
+	}
+	return want, cur
 }
 
 // davSaveClientState stores the client's extras and records what the device
@@ -496,7 +542,7 @@ func davMoveTask(device, uuid, calID, name string, pr, ar []string, inbox bool, 
 	if err != nil {
 		return err
 	}
-	current := thingsdav.FieldsFromTask(task, tags, davSomedayCategory(), time.Now())
+	current, raw, rolled := davCurrentFields(task, tags)
 	var base thingsdav.TaskFields
 	if found, err := davDB.snapshot(device, thingsdav.TaskKey(uuid), &base); err != nil {
 		return err
@@ -504,6 +550,10 @@ func davMoveTask(device, uuid, calID, name string, pr, ar []string, inbox bool, 
 		base = current
 	}
 	merged, conflicts := thingsdav.MergeFields(base, parsed.Fields, current)
+	cur := current
+	if rolled {
+		merged, cur = davSettleRollover(raw, current, base, parsed, merged)
+	}
 
 	u := newTaskUpdate()
 	u.fields["pr"], u.fields["ar"] = pr, ar
@@ -511,7 +561,7 @@ func davMoveTask(device, uuid, calID, name string, pr, ar []string, inbox bool, 
 	if task.InTrash {
 		u.trash(false)
 	}
-	if err := davApplyFields(u, task, current, merged, parsed.CompletedAt); err != nil {
+	if err := davApplyFields(u, task, cur, merged, parsed.CompletedAt); err != nil {
 		return err
 	}
 	if _, set := u.fields["st"]; !set && merged.When == "" && !merged.Someday {

@@ -40,6 +40,7 @@ type taskOutput struct {
 	ScheduledFor  string   `json:"scheduled_for,omitempty"`
 	Reminder      string   `json:"reminder,omitempty"`
 	Repeat        string   `json:"repeat,omitempty"`
+	RepeatOf      string   `json:"repeat_of,omitempty"`
 	TodayIndexRef string   `json:"today_index_ref,omitempty"`
 	ProjectID     string   `json:"project_id,omitempty"`
 	HeadingID     string   `json:"heading_id,omitempty"`
@@ -107,6 +108,11 @@ func formatTask(t *things.Task) taskOutput {
 		o.Reminder = fmt.Sprintf("%02d:%02d", *t.AlarmTimeOffset/3600, (*t.AlarmTimeOffset%3600)/60)
 	}
 	o.Repeat = describeRepeat(t.Repeater)
+	// repeat_of names the repeating template this task is one generated copy
+	// of. The rule lives on the template; edit that UUID to change the schedule.
+	if len(t.RecurrenceIDs) > 0 {
+		o.RepeatOf = t.RecurrenceIDs[0]
+	}
 	if t.TodayIndexReference != nil {
 		o.TodayIndexRef = t.TodayIndexReference.Format("2006-01-02")
 	}
@@ -1391,7 +1397,7 @@ func newMCPHandler() http.Handler {
 			mcp.Description("New comma-separated tag UUIDs (replaces existing)"),
 		),
 		mcp.WithString("repeat",
-			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', 'every N days/weeks/months/years', or 'none' to clear. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode. Repeating tasks cannot be moved to inbox."),
+			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', 'every N days/weeks/months/years', or 'none' to clear. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode. Repeating tasks cannot be moved to inbox. Only set this on the repeating task itself: if the task shows repeat_of, it is one generated copy, so change the repeat on the repeat_of UUID instead."),
 		),
 		mcp.WithString("reminder",
 			mcp.Description("Reminder time in 24h HH:MM format (e.g. '17:00'), or 'none' to remove it. The task must keep a dated 'when' (today or YYYY-MM-DD); removing the date also removes the reminder."),

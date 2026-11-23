@@ -209,3 +209,24 @@ func TestTimestamp_MarshalJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestTimestampMarshalFarDates(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"64092211200", "-9000000000", "1770713623.5"} {
+		var ts Timestamp
+		if err := json.Unmarshal([]byte(in), &ts); err != nil {
+			t.Fatal(err)
+		}
+		out, err := json.Marshal(&ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back Timestamp
+		if err := json.Unmarshal(out, &back); err != nil {
+			t.Fatal(err)
+		}
+		if !time.Time(back).Equal(time.Time(ts)) {
+			t.Errorf("%s round-tripped to %s (%v), want %v", in, out, time.Time(back), time.Time(ts))
+		}
+	}
+}

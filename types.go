@@ -101,7 +101,10 @@ func (t *Timestamp) UnmarshalJSON(bs []byte) error {
 // matching the format used by the Things Cloud API (e.g. 1770713623.4716659).
 func (t *Timestamp) MarshalJSON() ([]byte, error) {
 	tt := time.Time(*t)
-	ts := float64(tt.UnixNano()) / 1e9
+	// Unix() + Nanosecond() rather than UnixNano(): UnixNano overflows int64
+	// outside 1678-2262, which silently corrupted Things' 4001-01-01
+	// "repeat forever" sentinel into 2247-05-05.
+	ts := float64(tt.Unix()) + float64(tt.Nanosecond())/1e9
 	return json.Marshal(ts)
 }
 

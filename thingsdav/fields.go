@@ -200,7 +200,10 @@ func whenDate(t *things.Task, now time.Time) *time.Time {
 // ParsedTodo is a client VTODO split into the fields Things stores and the
 // extras it can't (kept in the sidecar and merged back on render).
 type ParsedTodo struct {
-	UID         string
+	UID string
+	// ParentUID is the UID the VTODO names with RELATED-TO;RELTYPE=PARENT:
+	// set for subtasks.
+	ParentUID   string
 	Fields      TaskFields
 	Created     time.Time  // zero if absent; used to recognize list moves
 	CompletedAt *time.Time // client COMPLETED timestamp
@@ -220,6 +223,8 @@ var ownedTodoProps = map[string]bool{
 	ical.PropDateTimeStart: true, ical.PropDue: true, ical.PropDuration: true,
 	ical.PropCategories: true, ical.PropDateTimeStamp: true, ical.PropCreated: true,
 	ical.PropLastModified: true,
+	// Nesting reflects Things: tasks never nest, checklist items always do.
+	ical.PropRelatedTo: true, propSortOrder: true,
 }
 
 // Sidecar markers (never sent to clients).
@@ -242,6 +247,7 @@ func ParseTodo(cal *ical.Calendar, somedayCategory string, loc *time.Location) (
 	}
 	p := &ParsedTodo{Fields: TaskFields{Status: StatusOpen, Reminder: NoReminder}}
 	p.UID = propText(todo, ical.PropUID)
+	p.ParentUID = parentUID(todo)
 	p.Fields.Title = propText(todo, ical.PropSummary)
 	p.Fields.Notes = propText(todo, ical.PropDescription)
 	switch strings.ToUpper(propText(todo, ical.PropStatus)) {

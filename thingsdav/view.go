@@ -9,9 +9,9 @@
 //   - Tags                 → CATEGORIES, plus the Someday category for undated Someday tasks
 //   - Completed / Canceled → STATUS:COMPLETED (+COMPLETED) / STATUS:CANCELLED
 //   - Deadline             → an all-day event in the Deadlines calendar
+//   - Checklist item       → a subtask VTODO with RELATED-TO;RELTYPE=PARENT (checklist.go)
 //
-// Headings and checklist items are not exported; titles and notes are passed
-// through verbatim.
+// Headings are not exported; titles and notes are passed through verbatim.
 package thingsdav
 
 import (
@@ -78,6 +78,9 @@ type Input struct {
 	// Alias returns the UID and file name a client created a task under,
 	// when they differ from the Things UUID.
 	Alias func(uuid string) (uid, name string, ok bool)
+	// Checklists maps task UUID → its checklist items in order. Items render
+	// as subtasks of their task.
+	Checklists map[string][]*things.CheckListItem
 }
 
 // Object is one rendered calendar resource.
@@ -85,9 +88,11 @@ type Object struct {
 	Name     string // file name within the calendar, e.g. "<uuid>.ics"
 	UID      string
 	Key      string // TaskKey or DeadlineKey: identifies merge snapshots
-	TaskUUID string // the Things task or project behind the object
-	Title    string
-	Created  time.Time // CREATED as rendered (second precision)
+	TaskUUID string // the Things task or project behind the object (a subtask's parent task)
+	// ChecklistUUID is set for subtasks: the Things checklist item.
+	ChecklistUUID string
+	Title         string
+	Created       time.Time // CREATED as rendered (second precision)
 	// Snapshot is the JSON of the object's TaskFields or DeadlineFields:
 	// recorded per device when the object is downloaded, it becomes the base
 	// of that device's next edit.
@@ -204,6 +209,9 @@ func Build(in Input) (*View, error) {
 		o := &Object{Name: name, UID: uid, Key: TaskKey(t.UUID), TaskUUID: t.UUID, Title: t.Title,
 			Created: t.CreationDate.UTC().Truncate(time.Second), ModTime: modTime(t)}
 		if err := b.addObject(cal, o, b.renderTodo(t, f, uid), f); err != nil {
+			return nil, err
+		}
+		if err := b.addChecklist(cal, t, uid); err != nil {
 			return nil, err
 		}
 		if t.Status == things.TaskStatusPending && t.DeadlineDate != nil {

@@ -85,14 +85,23 @@ Every calendar declares `supported-calendar-component-set = VTODO`.
 
 ### Inside a calendar
 
-BusyCal has no subtasks or nested to-dos, so each calendar is a flat list of
-tasks:
+Each calendar lists tasks, with checklist items nested under them as
+subtasks (BusyCal's 2026 beta reads standard CalDAV subtasks):
 
 | Things | CalDAV |
 |---|---|
 | Task | VTODO, `UID` = Things UUID |
 | Heading | **Hidden.** Not exported. A task's heading lives only in Things and is never touched by a CalDAV write. If a task moves to another list, its heading is cleared (it belonged to the old project). |
-| Checklist item | **Hidden** for the same reason (they would otherwise show up as separate flat to-dos). Edit checklists in Things. |
+| Checklist item | **Subtask:** a VTODO in the task's calendar, `UID` = item UUID, `RELATED-TO;RELTYPE=PARENT:<task UID>`, `X-APPLE-SORT-ORDER` = item index. Only title and status (open/completed/canceled) map; subtasks carry no date, notes, tags or alarms, and anything else a client sets on one is dropped on the next fetch. |
+
+Subtask writes (`server/dav_checklist.go`):
+
+- Edit: title and status three-way merge like task fields (Things wins conflicts).
+- Create: a new VTODO whose `RELATED-TO` names a rendered to-do (or a Things task UUID) becomes a checklist item at the bottom of that task. An unknown parent is refused (403).
+- Delete: deletes the checklist item (Things has no checklist trash). Subtask deletes have their own breaker limit (60/min), since BusyCal deletes every subtask of a to-do it moves.
+- Re-parent: `RELATED-TO` changed to another to-do moves the item there. Outdenting (dropping `RELATED-TO`) is ignored: a checklist item can't become a task.
+- Moves between lists: a re-created subtask whose `CREATED` + title match a checklist item deleted over CalDAV in the last 10 min is restored at its old position; one that matches an item still on the parent adopts the new UID instead of duplicating it.
+- Nesting a task under another task in BusyCal is ignored: Things tasks never render nested.
 
 ### Task fields
 
@@ -203,8 +212,8 @@ Normalization (Things wins, visible after the next GET):
   to-dos): the When date is the **local date in that TZID**, not the UTC
   date.
 - `RRULE` (before Phase 4): kept in the sidecar, not applied.
-- `RELATED-TO` from a client: kept in the sidecar and ignored (there are no
-  nested tasks).
+- `RELATED-TO` on a task: ignored and not kept (tasks never nest; see
+  subtasks above).
 - A `DUE` with a time: the date part becomes the When date, and the time
   is kept in the sidecar.
 
@@ -371,7 +380,8 @@ write_log(at, uid, fields, conflicts_json)
    separate **Deadlines** event calendar, where dragging an event moves the
    deadline. A BusyCal time and duration are BusyCal-only (kept in the
    sidecar). Things reminders ⇄ BusyCal alarms.
-3. **Headings and checklists:** hidden. They stay in Things only.
+3. **Headings:** hidden. They stay in Things only. **Checklists:** subtasks
+   (title and completion sync both ways).
 4. **Completed window:** 30 days to start. Things keeps the full history no
    matter what. BusyCal's local history depends on the window
    (`CALDAV_COMPLETED_DAYS=0` exposes everything).

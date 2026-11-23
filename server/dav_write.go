@@ -35,6 +35,8 @@ var davDB *davStore
 type davTaskSource interface {
 	Task(uuid string) (*things.Task, error)
 	AllTags() ([]*things.Tag, error)
+	ChecklistItem(uuid string) (*things.CheckListItem, error)
+	ChecklistItems(taskUUID string) ([]*things.CheckListItem, error)
 }
 
 // davState returns current Things state. Overridable in tests.
@@ -51,6 +53,9 @@ const (
 	davMoveWindow          = 10 * time.Minute
 	davDeleteWindow        = time.Minute
 	davMaxDeletesPerWindow = 20
+	// Subtask deletes count separately and more loosely: BusyCal deletes
+	// every subtask of a to-do it moves between lists.
+	davMaxChecklistDeletesPerWindow = 60
 )
 
 func logDAV(format string, args ...any) { log.Printf("[DAV] "+format, args...) }
@@ -112,9 +117,10 @@ func davRecordServed(ctx context.Context, objs ...*thingsdav.Object) {
 // ---------------------------------------------------------------------------
 
 var davBreaker struct {
-	mu      gosync.Mutex
-	deletes []time.Time
-	tripped bool
+	mu           gosync.Mutex
+	deletes      []time.Time
+	checkDeletes []time.Time
+	tripped      bool
 }
 
 func davWritable() error {
@@ -130,25 +136,34 @@ func davWritable() error {
 	return nil
 }
 
-// davAllowDelete counts a delete and trips the breaker past the limit.
+// davAllowDelete counts a task delete and trips the breaker past the limit.
 func davAllowDelete(now time.Time) error {
+	return davCountDelete(now, &davBreaker.deletes, davMaxDeletesPerWindow)
+}
+
+// davAllowChecklistDelete counts a subtask delete.
+func davAllowChecklistDelete(now time.Time) error {
+	return davCountDelete(now, &davBreaker.checkDeletes, davMaxChecklistDeletesPerWindow)
+}
+
+func davCountDelete(now time.Time, deletes *[]time.Time, limit int) error {
 	davBreaker.mu.Lock()
 	defer davBreaker.mu.Unlock()
 	cutoff := now.Add(-davDeleteWindow)
-	kept := davBreaker.deletes[:0]
-	for _, t := range davBreaker.deletes {
+	kept := (*deletes)[:0]
+	for _, t := range *deletes {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
-	davBreaker.deletes = kept
-	if len(kept) >= davMaxDeletesPerWindow {
+	*deletes = kept
+	if len(kept) >= limit {
 		davBreaker.tripped = true
 		logDAV("breaker tripped: %d deletes within %s; writes paused", len(kept)+1, davDeleteWindow)
 		return webdav.NewHTTPError(http.StatusServiceUnavailable,
 			fmt.Errorf("too many deletes; CalDAV writes paused, POST /api/dav/resume to re-enable"))
 	}
-	davBreaker.deletes = append(davBreaker.deletes, now)
+	*deletes = append(*deletes, now)
 	return nil
 }
 
@@ -159,7 +174,7 @@ func handleDAVResume(w http.ResponseWriter, r *http.Request) {
 	}
 	davBreaker.mu.Lock()
 	davBreaker.tripped = false
-	davBreaker.deletes = nil
+	davBreaker.deletes, davBreaker.checkDeletes = nil, nil
 	davBreaker.mu.Unlock()
 	logDAV("writes resumed")
 	jsonResponse(w, map[string]string{"status": "resumed"})
@@ -213,9 +228,14 @@ func (davBackend) PutCalendarObject(ctx context.Context, p string, cal *ical.Cal
 		if perr != nil {
 			return nil, davBadRequest("%v", perr)
 		}
-		if existing != nil {
+		switch {
+		case existing != nil && thingsdav.IsChecklistKey(existing.Key):
+			err = davUpdateChecklist(device, view, existing, parsed, opts)
+		case existing != nil:
 			err = davUpdateTask(device, existing, parsed, opts)
-		} else {
+		case parsed.ParentUID != "":
+			err = davCreateSubtask(device, view, name, parsed)
+		default:
 			err = davCreateOrMove(device, view, calID, name, parsed)
 		}
 	}
@@ -265,6 +285,9 @@ func (davBackend) DeleteCalendarObject(ctx context.Context, p string) error {
 		}
 		davDB.logWrite(device, o.Key, "clear-deadline", nil)
 		return nil
+	}
+	if thingsdav.IsChecklistKey(o.Key) {
+		return davDeleteChecklist(device, o)
 	}
 	if err := davAllowDelete(time.Now()); err != nil {
 		return err
@@ -461,7 +484,7 @@ func davFindMoveSource(view *thingsdav.View, calID string, parsed *thingsdav.Par
 			continue
 		}
 		for _, o := range c.Objects {
-			if o.Created.Equal(parsed.Created) && o.Title == parsed.Fields.Title {
+			if o.ChecklistUUID == "" && o.Created.Equal(parsed.Created) && o.Title == parsed.Fields.Title {
 				return o.TaskUUID, nil
 			}
 		}

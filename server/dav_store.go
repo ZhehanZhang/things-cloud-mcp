@@ -10,6 +10,8 @@ package main
 //   - sidecars:       client properties Things can't hold (duration, time of
 //                     day, priority, extra alarms), merged back on render
 //   - recent_deletes: tasks trashed over CalDAV, to recognize list moves
+//   - checklist_deletes: checklist items deleted over CalDAV, so a subtask
+//                     BusyCal re-creates during a move gets its place back
 //   - write_log:      every CalDAV write, with the conflicts Things won
 
 import (
@@ -47,6 +49,14 @@ CREATE TABLE IF NOT EXISTS recent_deletes (
     task_uuid  TEXT PRIMARY KEY,
     created    INTEGER NOT NULL,
     title      TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checklist_deletes (
+    item_uuid  TEXT PRIMARY KEY,
+    task_uuid  TEXT NOT NULL,
+    created    INTEGER NOT NULL,
+    title      TEXT NOT NULL,
+    idx        INTEGER NOT NULL,
     deleted_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS write_log (
@@ -220,6 +230,39 @@ func (s *davStore) takeRecentDelete(created time.Time, title string, since time.
 	}
 	_, err = s.db.Exec(`DELETE FROM recent_deletes WHERE task_uuid = ?`, uuid)
 	return uuid, err
+}
+
+// davChecklistDelete is a checklist item deleted over CalDAV.
+type davChecklistDelete struct {
+	itemUUID, taskUUID string
+	created            time.Time
+	title              string
+	index              int
+}
+
+func (s *davStore) recordChecklistDelete(d davChecklistDelete) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO checklist_deletes (item_uuid, task_uuid, created, title, idx, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, d.itemUUID, d.taskUUID, d.created.Unix(), d.title, d.index, time.Now().Unix())
+	return err
+}
+
+// takeChecklistDelete finds (and forgets) a checklist item deleted over
+// CalDAV since `since` whose CREATED and title match.
+func (s *davStore) takeChecklistDelete(created time.Time, title string, since time.Time) (*davChecklistDelete, error) {
+	d := &davChecklistDelete{title: title}
+	var cr int64
+	err := s.db.QueryRow(`SELECT item_uuid, task_uuid, created, idx FROM checklist_deletes
+		WHERE created = ? AND title = ? AND deleted_at >= ? ORDER BY deleted_at DESC LIMIT 1`,
+		created.Unix(), title, since.Unix()).Scan(&d.itemUUID, &d.taskUUID, &cr, &d.index)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.created = time.Unix(cr, 0).UTC()
+	_, err = s.db.Exec(`DELETE FROM checklist_deletes WHERE item_uuid = ?`, d.itemUUID)
+	return d, err
 }
 
 func (s *davStore) logWrite(device, key, action string, detail any) {

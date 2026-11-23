@@ -161,6 +161,9 @@ func davInput(st *sync.State, now time.Time, completedDays int) (thingsdav.Input
 	if in.Areas, err = st.AllAreas(); err != nil {
 		return in, fmt.Errorf("load areas: %w", err)
 	}
+	if in.Checklists, err = st.AllChecklistItems(); err != nil {
+		return in, fmt.Errorf("load checklist items: %w", err)
+	}
 	tags, err := st.AllTags()
 	if err != nil {
 		return in, fmt.Errorf("load tags: %w", err)

@@ -411,6 +411,50 @@ func (st *State) ChecklistItems(taskUUID string) ([]*things.CheckListItem, error
 	return items, nil
 }
 
+// AllChecklistItems returns every live checklist item, grouped by task UUID
+// and ordered by index, with creation and completion dates.
+func (st *State) AllChecklistItems() (map[string][]*things.CheckListItem, error) {
+	st.syncer.mu.RLock()
+	defer st.syncer.mu.RUnlock()
+
+	rows, err := st.executor().Query(`
+		SELECT uuid, task_uuid, title, status, "index", creation_date, completion_date
+		FROM checklist_items
+		WHERE deleted = 0 AND task_uuid IS NOT NULL AND task_uuid != ''
+		ORDER BY task_uuid, "index", creation_date, uuid
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string][]*things.CheckListItem{}
+	for rows.Next() {
+		var (
+			c                        things.CheckListItem
+			taskUUID                 string
+			status                   int
+			index                    sql.NullInt64
+			creationDate, completion sql.NullInt64
+		)
+		if err := rows.Scan(&c.UUID, &taskUUID, &c.Title, &status, &index, &creationDate, &completion); err != nil {
+			return nil, err
+		}
+		c.Status = things.TaskStatus(status)
+		c.Index = int(index.Int64)
+		c.TaskIDs = []string{taskUUID}
+		if creationDate.Valid {
+			c.CreationDate = time.Unix(creationDate.Int64, 0).UTC()
+		}
+		if completion.Valid {
+			ts := time.Unix(completion.Int64, 0).UTC()
+			c.CompletionDate = &ts
+		}
+		out[taskUUID] = append(out[taskUUID], &c)
+	}
+	return out, rows.Err()
+}
+
 // Helper methods
 
 func currentUTCDayBounds() (int64, int64) {

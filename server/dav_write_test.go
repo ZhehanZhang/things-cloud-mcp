@@ -21,11 +21,27 @@ type fakeDAV struct {
 	areas  []*things.Area
 	tags   []*things.Tag
 	writes []writeEnvelope
+	checks map[string][]*things.CheckListItem // task UUID → items
 	srv    *httptest.Server
 }
 
 func (f *fakeDAV) Task(uuid string) (*things.Task, error) { return f.tasks[uuid], nil }
 func (f *fakeDAV) AllTags() ([]*things.Tag, error)        { return f.tags, nil }
+
+func (f *fakeDAV) ChecklistItem(uuid string) (*things.CheckListItem, error) {
+	for _, items := range f.checks {
+		for _, it := range items {
+			if it.UUID == uuid {
+				return it, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeDAV) ChecklistItems(taskUUID string) ([]*things.CheckListItem, error) {
+	return f.checks[taskUUID], nil
+}
 
 func (f *fakeDAV) add(t *things.Task) *things.Task {
 	if t.CreationDate.IsZero() {
@@ -40,7 +56,7 @@ func (f *fakeDAV) add(t *things.Task) *things.Task {
 
 func newFakeDAV(t *testing.T) *fakeDAV {
 	t.Helper()
-	f := &fakeDAV{t: t, tasks: map[string]*things.Task{}}
+	f := &fakeDAV{t: t, tasks: map[string]*things.Task{}, checks: map[string][]*things.CheckListItem{}}
 	f.add(&things.Task{UUID: "Proj1", Title: "Launch", Type: things.TaskTypeProject, AreaIDs: []string{"Area1"}})
 	f.areas = []*things.Area{{UUID: "Area1", Title: "Work"}}
 	f.tags = []*things.Tag{{UUID: "TagHome", Title: "home"}}
@@ -59,11 +75,11 @@ func newFakeDAV(t *testing.T) *fakeDAV {
 	loadDAVView = f.view
 	writeToHistory = func(env writeEnvelope) error { f.writes = append(f.writes, env); return nil }
 	doSync = func() error { return nil }
-	davBreaker.tripped, davBreaker.deletes = false, nil
+	davBreaker.tripped, davBreaker.deletes, davBreaker.checkDeletes = false, nil, nil
 	t.Cleanup(func() {
 		store.Close()
 		davDB, davState, loadDAVView, writeToHistory, doSync = origDB, origState, origView, origWrite, origSync
-		davBreaker.tripped, davBreaker.deletes = false, nil
+		davBreaker.tripped, davBreaker.deletes, davBreaker.checkDeletes = false, nil, nil
 	})
 
 	mux := http.NewServeMux()
@@ -76,11 +92,12 @@ func newFakeDAV(t *testing.T) *fakeDAV {
 
 func (f *fakeDAV) view() (*thingsdav.View, error) {
 	in := thingsdav.Input{
-		Areas:    f.areas,
-		Tags:     map[string]string{},
-		Lookup:   func(id string) *things.Task { return f.tasks[id] },
-		Now:      time.Now(),
-		Location: thingsLocation(),
+		Areas:      f.areas,
+		Tags:       map[string]string{},
+		Lookup:     func(id string) *things.Task { return f.tasks[id] },
+		Now:        time.Now(),
+		Location:   thingsLocation(),
+		Checklists: f.checks,
 	}
 	for _, tg := range f.tags {
 		in.Tags[tg.UUID] = tg.Title

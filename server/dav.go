@@ -77,11 +77,13 @@ func davAuth(password string, next http.Handler) http.Handler {
 // ---------------------------------------------------------------------------
 
 // davViewKey identifies a rendered view: it changes when Things syncs new
-// items, when the UTC day rolls over (tir-based Today, completed window), or
-// when the window setting changes.
+// items, when aliases or sidecars change (on this node or, via the shared
+// store, on another), when the UTC day rolls over (tir-based Today,
+// completed window), or when the window setting changes.
 type davViewKey struct {
 	serverIndex   int
 	generation    int64
+	storeGen      int64
 	utcDay        string
 	localDay      string // rollover moves overdue tasks to this day
 	completedDays int
@@ -103,6 +105,7 @@ var loadDAVView = func() (*thingsdav.View, error) {
 	key := davViewKey{
 		serverIndex:   syncer.LastSyncedIndex(),
 		generation:    davGeneration.Load(),
+		storeGen:      davStoreGeneration(),
 		utcDay:        now.UTC().Format("2006-01-02"),
 		localDay:      thingsdav.LocalDay(now, thingsLocation()),
 		completedDays: davCompletedDays(),
@@ -129,6 +132,15 @@ var loadDAVView = func() (*thingsdav.View, error) {
 	log.Printf("[DAV] rendered %d calendars, %d objects at index %d in %s",
 		len(view.Calendars), n, key.serverIndex, time.Since(start).Round(time.Millisecond))
 	return view, nil
+}
+
+// davStoreGeneration is the shared store's alias/sidecar counter, so a
+// change written through another node invalidates this node's render.
+func davStoreGeneration() int64 {
+	if davDB == nil {
+		return 0
+	}
+	return davDB.generation()
 }
 
 // davInput gathers the Things state thingsdav.Build needs.

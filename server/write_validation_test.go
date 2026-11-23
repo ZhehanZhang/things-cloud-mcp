@@ -418,3 +418,22 @@ func TestBase58UUIDRejectsAppIndecodableLengths(t *testing.T) {
 		t.Fatal("22-char identifier must be accepted")
 	}
 }
+
+func TestBuildEditUpdateRejectsRepeatOnInstance(t *testing.T) {
+	instance := &thingscloud.Task{UUID: testTaskUUID, Schedule: thingscloud.TaskScheduleAnytime, RecurrenceIDs: []string{testProjectUUID}}
+	for _, repeat := range []string{"weekly", "none"} {
+		_, err := buildEditUpdate(EditTaskRequest{UUID: testTaskUUID, Repeat: repeat}, instance, time.UTC)
+		if err == nil || !isInvalidInput(err) || !strings.Contains(err.Error(), testProjectUUID) {
+			t.Fatalf("repeat %q on an instance: expected invalid-input error naming the template, got %v", repeat, err)
+		}
+	}
+	// Other edits to an instance still go through.
+	if _, err := buildEditUpdate(EditTaskRequest{UUID: testTaskUUID, Title: "renamed"}, instance, time.UTC); err != nil {
+		t.Fatalf("title edit on an instance: %v", err)
+	}
+	// Setting a repeat on a plain task still works.
+	plain := &thingscloud.Task{UUID: testTaskUUID, Schedule: thingscloud.TaskScheduleAnytime}
+	if _, err := buildEditUpdate(EditTaskRequest{UUID: testTaskUUID, Repeat: "weekly"}, plain, time.UTC); err != nil {
+		t.Fatalf("repeat on a plain task: %v", err)
+	}
+}

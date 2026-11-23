@@ -1095,6 +1095,13 @@ func editTask(req EditTaskRequest) error {
 // loc is the resolved calendar-day timezone for this request.
 func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task, loc *time.Location) (map[string]any, error) {
 	u := newTaskUpdate()
+	// A task with rt set is one generated instance of a repeating template.
+	// Writing rr onto it turns the instance into a second template while the
+	// original keeps generating, so every period then spawns two copies.
+	// Things' own UI always applies repeat changes to the template.
+	if req.Repeat != "" && len(task.RecurrenceIDs) > 0 {
+		return nil, invalidInputf("task %s is an instance of repeating task %s; change the repeat on %s instead (setting it here would create a second, duplicate repeating series)", req.UUID, task.RecurrenceIDs[0], task.RecurrenceIDs[0])
+	}
 	if req.Repeat != "" && req.When == "inbox" {
 		return nil, invalidInputf("repeat tasks cannot be in inbox; use when:anytime, today, someday, YYYY-MM-DD, or omit when")
 	}

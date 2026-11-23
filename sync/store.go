@@ -16,7 +16,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 				uuid, type, title, note, status, schedule,
 				scheduled_date, deadline_date, completion_date, creation_date, modification_date,
 				"index", today_index, in_trash, area_uuid, project_uuid, heading_uuid,
-				alarm_time_offset, recurrence_rule, today_index_ref, deleted
+				alarm_time_offset, recurrence_rule, today_index_ref, repeating_template_uuid, deleted
 			FROM tasks
 			WHERE uuid = ? AND deleted = 0
 		`, uuid)
@@ -38,6 +38,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 		alarmTimeOffset  sql.NullInt64
 		recurrenceRule   sql.NullString
 		todayIndexRef    sql.NullInt64
+		templateUUID     sql.NullString
 		deleted          int
 	)
 
@@ -45,7 +46,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 		&t.UUID, &taskType, &t.Title, &t.Note, &status, &schedule,
 		&scheduledDate, &deadlineDate, &completionDate, &creationDate, &modificationDate,
 		&t.Index, &t.TodayIndex, &inTrash, &areaUUID, &projectUUID, &headingUUID,
-		&alarmTimeOffset, &recurrenceRule, &todayIndexRef, &deleted,
+		&alarmTimeOffset, &recurrenceRule, &todayIndexRef, &templateUUID, &deleted,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -94,6 +95,9 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 	}
 	if headingUUID.Valid && headingUUID.String != "" {
 		t.ActionGroupIDs = []string{headingUUID.String}
+	}
+	if templateUUID.Valid && templateUUID.String != "" {
+		t.RecurrenceIDs = []string{templateUUID.String}
 	}
 
 	// Convert nullable alarm time offset
@@ -166,6 +170,11 @@ func (s *Syncer) saveTask(t *things.Task) error {
 		headingUUID = sql.NullString{String: t.ActionGroupIDs[0], Valid: true}
 	}
 
+	var templateUUID sql.NullString
+	if len(t.RecurrenceIDs) > 0 && t.RecurrenceIDs[0] != "" {
+		templateUUID = sql.NullString{String: t.RecurrenceIDs[0], Valid: true}
+	}
+
 	// Convert nullable alarm time offset
 	var alarmTimeOffset sql.NullInt64
 	if t.AlarmTimeOffset != nil {
@@ -200,13 +209,13 @@ func (s *Syncer) saveTask(t *things.Task) error {
 			uuid, type, title, note, status, schedule,
 			scheduled_date, deadline_date, completion_date, creation_date, modification_date,
 			"index", today_index, in_trash, area_uuid, project_uuid, heading_uuid,
-			alarm_time_offset, recurrence_rule, today_index_ref, deleted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+			alarm_time_offset, recurrence_rule, today_index_ref, repeating_template_uuid, deleted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`,
 		t.UUID, int(t.Type), t.Title, t.Note, int(t.Status), int(t.Schedule),
 		scheduledDate, deadlineDate, completionDate, creationDate, modificationDate,
 		t.Index, t.TodayIndex, inTrash, areaUUID, projectUUID, headingUUID,
-		alarmTimeOffset, recurrenceRule, todayIndexRef,
+		alarmTimeOffset, recurrenceRule, todayIndexRef, templateUUID,
 	)
 	if err != nil {
 		return err

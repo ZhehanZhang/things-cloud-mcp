@@ -1,6 +1,6 @@
 package sync
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 const schema = `
 -- Schema version tracking
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     alarm_time_offset INTEGER,
     recurrence_rule TEXT,
     today_index_ref INTEGER,
+    repeating_template_uuid TEXT,
     deleted INTEGER DEFAULT 0
 );
 
@@ -162,6 +163,12 @@ DELETE FROM sync_state;
 // previously parsed but never stored, are ingested by a full resync.
 const migration6 = migration5
 
+// migration7 stores each task's repeating template (rt) so writes can tell a
+// repeat instance from its template, and invalidates the local cache so rt is
+// backfilled and recurrence rules corrupted by the old Timestamp marshaller
+// (year-4001 end dates stored as 2247-05-05) are rebuilt by a full resync.
+const migration7 = migration5
+
 func (s *Syncer) migrate() error {
 	// Check current version
 	var version int
@@ -206,6 +213,14 @@ func (s *Syncer) migrate() error {
 			return err
 		}
 	}
+	if version < 7 {
+		if err := s.addColumnIfMissing("tasks", "repeating_template_uuid", "TEXT"); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(migration7); err != nil {
+			return err
+		}
+	}
 
 	// Update schema version
 	_, err = s.db.Exec("UPDATE schema_version SET version = ?", schemaVersion)
@@ -216,5 +231,29 @@ func (s *Syncer) migrate() error {
 // rebuilt from a different (or replaced) history stream.
 func (s *Syncer) resetLocalState() error {
 	_, err := s.db.Exec(migration5)
+	return err
+}
+
+// addColumnIfMissing adds a column unless the table already has it (a cache
+// created by a newer schema and then downgraded in version only).
+func (s *Syncer) addColumnIfMissing(table, column, decl string) error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
 	return err
 }

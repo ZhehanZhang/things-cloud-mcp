@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS journal_key ON journal (key);
 
 // davMirrorTables are copied from rqlite into the local fallback; the
 // write log is only appended to.
-var davMirrorTables = []string{"snapshots", "aliases", "sidecars", "recent_deletes", "meta", "leases"}
+var davMirrorTables = []string{"snapshots", "aliases", "sidecars", "recent_deletes", "checklist_deletes", "meta", "leases"}
 
 // davFailoverProbeEvery is how often a degraded node checks for a leader.
 // Overridable in tests.

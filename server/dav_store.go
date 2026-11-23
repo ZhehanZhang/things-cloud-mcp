@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS leases (
 `
 
 // davStoreTables are the tables of a CalDAV store, in schema order.
-var davStoreTables = []string{"snapshots", "aliases", "sidecars", "recent_deletes", "write_log", "meta", "leases"}
+var davStoreTables = []string{"snapshots", "aliases", "sidecars", "recent_deletes", "checklist_deletes", "write_log", "meta", "leases"}
 
 // davStoreSchemaStmts splits davStoreSchema into single statements, for
 // backends that take one statement at a time.
@@ -269,12 +269,11 @@ func (s *davStore) sidecars() (map[string]string, error) {
 
 // sidecar returns one task's stored sidecar, or "".
 func (s *davStore) sidecar(taskUUID string) (string, error) {
-	var ics string
-	err := s.db.QueryRow(`SELECT ics FROM sidecars WHERE task_uuid = ?`, taskUUID).Scan(&ics)
-	if err == sql.ErrNoRows {
-		return "", nil
+	rows, err := s.sql.query(false, stmt("", `SELECT ics FROM sidecars WHERE task_uuid = ?`, taskUUID))
+	if err != nil || len(rows) == 0 {
+		return "", err
 	}
-	return ics, err
+	return sqlString(rows[0][0]), nil
 }
 
 // setSidecar replaces a task's sidecar; an empty ics removes it.
@@ -338,28 +337,36 @@ type davChecklistDelete struct {
 }
 
 func (s *davStore) recordChecklistDelete(d davChecklistDelete) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO checklist_deletes (item_uuid, task_uuid, created, title, idx, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, d.itemUUID, d.taskUUID, d.created.Unix(), d.title, d.index, time.Now().Unix())
+	_, err := s.sql.exec(stmt("checklist_deletes:"+d.itemUUID,
+		`INSERT OR REPLACE INTO checklist_deletes (item_uuid, task_uuid, created, title, idx, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, d.itemUUID, d.taskUUID, d.created.Unix(), d.title, d.index, time.Now().Unix()))
 	return err
 }
 
 // takeChecklistDelete finds (and forgets) a checklist item deleted over
-// CalDAV since `since` whose CREATED and title match.
+// CalDAV since `since` whose CREATED and title match. Like takeRecentDelete,
+// the delete is conditional so two nodes can't both claim the same row.
 func (s *davStore) takeChecklistDelete(created time.Time, title string, since time.Time) (*davChecklistDelete, error) {
-	d := &davChecklistDelete{title: title}
-	var cr int64
-	err := s.db.QueryRow(`SELECT item_uuid, task_uuid, created, idx FROM checklist_deletes
-		WHERE created = ? AND title = ? AND deleted_at >= ? ORDER BY deleted_at DESC LIMIT 1`,
-		created.Unix(), title, since.Unix()).Scan(&d.itemUUID, &d.taskUUID, &cr, &d.index)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	for attempt := 0; attempt < 5; attempt++ {
+		rows, err := s.sql.query(true, stmt("", `SELECT item_uuid, task_uuid, created, idx, deleted_at FROM checklist_deletes
+			WHERE created = ? AND title = ? AND deleted_at >= ? ORDER BY deleted_at DESC LIMIT 1`,
+			created.Unix(), title, since.Unix()))
+		if err != nil || len(rows) == 0 {
+			return nil, err
+		}
+		r := rows[0]
+		d := &davChecklistDelete{itemUUID: sqlString(r[0]), taskUUID: sqlString(r[1]),
+			created: time.Unix(sqlInt(r[2]), 0).UTC(), title: title, index: int(sqlInt(r[3]))}
+		n, err := s.sql.exec(stmt("checklist_deletes:"+d.itemUUID,
+			`DELETE FROM checklist_deletes WHERE item_uuid = ? AND deleted_at = ?`, d.itemUUID, sqlInt(r[4])))
+		if err != nil {
+			return nil, err
+		}
+		if n[0] == 1 {
+			return d, nil
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	d.created = time.Unix(cr, 0).UTC()
-	_, err = s.db.Exec(`DELETE FROM checklist_deletes WHERE item_uuid = ?`, d.itemUUID)
-	return d, err
+	return nil, nil
 }
 
 func (s *davStore) logWrite(device, key, action string, detail any) {

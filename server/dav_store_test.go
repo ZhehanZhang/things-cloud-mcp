@@ -253,9 +253,28 @@ func TestDAVStoreOperations(t *testing.T) {
 		if sc["A"] != "BEGIN:VCALENDAR" {
 			t.Errorf("sidecars = %v", sc)
 		}
+		if ics, err := s.sidecar("A"); ics != "BEGIN:VCALENDAR" || err != nil {
+			t.Errorf("sidecar = %q, %v", ics, err)
+		}
 		s.setSidecar("A", "")
 		if sc, _ := s.sidecars(); len(sc) != 0 {
 			t.Errorf("empty sidecar not removed: %v", sc)
+		}
+		if ics, err := s.sidecar("A"); ics != "" || err != nil {
+			t.Errorf("removed sidecar = %q, %v", ics, err)
+		}
+
+		itemCreated := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
+		if err := s.recordChecklistDelete(davChecklistDelete{itemUUID: "C1", taskUUID: "A",
+			created: itemCreated, title: "step", index: 3}); err != nil {
+			t.Fatal(err)
+		}
+		d, err := s.takeChecklistDelete(itemCreated, "step", time.Now().Add(-time.Minute))
+		if err != nil || d == nil || d.itemUUID != "C1" || d.taskUUID != "A" || d.index != 3 || !d.created.Equal(itemCreated) {
+			t.Fatalf("takeChecklistDelete = %+v, %v", d, err)
+		}
+		if d, _ := s.takeChecklistDelete(itemCreated, "step", time.Now().Add(-time.Minute)); d != nil {
+			t.Error("a checklist delete must be taken only once")
 		}
 
 		created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)

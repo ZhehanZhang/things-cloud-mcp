@@ -171,6 +171,47 @@ func FieldsFromTask(t *things.Task, tags map[string]string, somedayCategory stri
 	return f
 }
 
+// Rollover shows an overdue open task on today, the way Things keeps it in
+// Today until it is done. Things never rewrites the When date of such a
+// task, so without this BusyCal would list it as overdue on its old day.
+//
+// Time-blocked tasks (a BusyCal time of day in the sidecar) stay on the day
+// they were blocked: that block is a record of the plan, and moving the
+// to-do would erase it from the calendar. Completed and canceled tasks never
+// move. A rolled task hides its Things reminder, which already fired on the
+// original day; the reminder itself stays in Things.
+//
+// today is the current calendar day as YYYY-MM-DD in the server's zone.
+func Rollover(f TaskFields, timed bool, today string) (TaskFields, bool) {
+	if f.Status != StatusOpen || f.When == "" || timed || f.When >= today {
+		return f, false
+	}
+	f.When = today
+	f.Reminder = NoReminder
+	return f, true
+}
+
+// LocalDay is now's calendar day in loc as YYYY-MM-DD.
+func LocalDay(now time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return now.In(loc).Format(dateLayout)
+}
+
+// HasTime reports whether a sidecar holds a BusyCal time of day, i.e. the
+// to-do is time-blocked on its date.
+func HasTime(extras *ical.Calendar) bool {
+	if extras == nil {
+		return false
+	}
+	todo := firstChild(extras.Component, ical.CompToDo)
+	return todo != nil && todo.Props.Get(propTime) != nil
+}
+
+// Timed reports whether the client sent the to-do with a time of day.
+func (p *ParsedTodo) Timed() bool { return HasTime(p.Extras) }
+
 // DeadlineFromTask derives the Deadlines-event view of a task or project.
 func DeadlineFromTask(t *things.Task) DeadlineFields {
 	if t.DeadlineDate == nil {
